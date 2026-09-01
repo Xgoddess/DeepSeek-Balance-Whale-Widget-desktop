@@ -22,8 +22,8 @@
 
 ```powershell
 cd src-tauri
-cargo build            # 调试构建（target/debug/dsh-whale-widget.exe）
-cargo build --release  # 发布构建（target/release/dsh-whale-widget.exe）
+cargo build            # 调试构建（target/debug/whale-widget-desktop.exe）
+cargo build --release  # 发布构建（target/release/whale-widget-desktop.exe）
 ```
 
 ## 使用
@@ -35,9 +35,9 @@ cargo build --release  # 发布构建（target/release/dsh-whale-widget.exe）
 
 ## 配置存储
 
-- API Key：`%APPDATA%\dsh-whale\config.json`
-- 挂件配置：`%APPDATA%\dsh-whale\widget.json`
-- 记账数据：`%APPDATA%\dsh-whale\usage.json`
+- API Key：`%APPDATA%\whale-widget\config.json`
+- 挂件配置：`%APPDATA%\whale-widget\widget.json`
+- 记账数据：`%APPDATA%\whale-widget\usage.json`
 
 ## 开源协议
 
