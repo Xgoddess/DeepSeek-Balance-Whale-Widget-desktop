@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DeepSeek 鲸鱼挂件",
-  "version": "0.3.0",
-  "identifier": "com.dsh.whale-widget",
+  "productName": "whale-widget-desktop",
+  "version": "0.4.0",
+  "identifier": "com.whale-widget.desktop",
   "build": {
     "frontendDist": "../dist"
   },
@@ -38,7 +38,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": ["icons/icon.png"]
   }
 }

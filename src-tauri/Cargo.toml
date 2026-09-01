@@ -1,6 +1,6 @@
 [package]
 name = "dsh-whale-widget"
-version = "0.3.0"
+version = "0.4.0"
 description = "DeepSeek 余额小鲸鱼桌面挂件（Tauri 版）"
 edition = "2021"
 
