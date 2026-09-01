@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>鲸鱼挂件设置</title>
+  <style>
+    body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; padding: 22px; background: #f5f7fb; color: #203170; }
+    h2 { margin: 0 0 6px; font-size: 18px; }
+    .sub { font-size: 12px; color: #8895b8; margin-bottom: 14px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin: 14px 0 5px; }
+    input[type=password] { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid #c3cbe0; border-radius: 6px; font-size: 13px; background: #fff; }
+    .hint { font-size: 12px; color: #8895b8; margin-top: 5px; line-height: 1.5; }
+    .btn-row { margin-top: 22px; display: flex; gap: 10px; justify-content: flex-end; }
+    button { padding: 9px 22px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    #save { background: #203170; color: #fff; }
+    #save:hover { background: #2a3f8a; }
+    #status { font-size: 12px; color: #2fa24c; min-height: 16px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>DeepSeek API 设置</h2>
+  <div class="sub">配置保存到 %APPDATA%\dsh-whale\config.json</div>
+  <label>API Key（余额必需）</label>
+  <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" />
+  <div class="hint">从 platform.deepseek.com 获取，用于拉取余额</div>
+  <div class="btn-row">
+    <button id="save">保存</button>
+  </div>
+  <div id="status"></div>
+  <script defer src="settings.js"></script>
+</body>
+</html>

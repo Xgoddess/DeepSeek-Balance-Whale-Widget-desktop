@@ -1,0 +1,17 @@
+# Rust / Tauri 编译产物
+/src-tauri/target/
+target/
+
+# 日志
+logs/
+*.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+Desktop.ini
+
+# 辅助调试脚本（保留）
+# tools/
