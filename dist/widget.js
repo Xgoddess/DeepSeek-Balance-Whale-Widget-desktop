@@ -19,6 +19,7 @@ var GIF_URL = 'assets/rua.gif'
 
 var css = [
   '.dshwv-root{position:fixed;right:0;bottom:0;--dshw-scale:1;--dshw-base:clamp(122px,calc(min(250px,min(100vw,100vh) * 0.28) * var(--dshw-scale)),625px);width:var(--dshw-base);height:var(--dshw-base);pointer-events:none;user-select:none;-webkit-user-select:none;z-index:9999;font-family:inherit;transition:left .16s ease,top .16s ease,transform .3s ease}',
+  '.dshwv-root.dshwv-dragging{transition:none}',
   '.dshwv-root.dshwv-left{transform:scaleX(-1)}',
   '.dshwv-root.dshwv-dragging{cursor:grabbing;transition:none}',
   '.dshwv-body{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:50% 100%;transition:transform .22s cubic-bezier(.34,1.56,.64,1)}',
@@ -487,6 +488,52 @@ function monitorAtY(cy) {
   }
   return best
 }
+// 空白区贴边：挂件中心不在任何显示器内部（横竖屏交界等无屏幕覆盖处）时，
+// 垂直吸「最近的水平边」（各显示器顶/底边），水平参照同一显示器贴边，
+// 返回 {left, top, h, v}（锚点与 settle 的分轴 mX/mY 选择一致，保证后续保持贴边）
+function snapBlankPos(cx, cy, w, h, vpw, vph) {
+  var vEdgeY = null, vEdgeType = null, vEdgeVal = Infinity, vMon = null
+  for (var i = 0; i < monitors.length; i++) {
+    var mm = monitors[i]
+    var dt = Math.abs(cy - mm.y)
+    var db = Math.abs(mm.y + mm.h - cy)
+    if (dt < vEdgeVal) { vEdgeVal = dt; vEdgeY = mm.y; vEdgeType = 'top'; vMon = mm }
+    if (db < vEdgeVal) { vEdgeVal = db; vEdgeY = mm.y + mm.h; vEdgeType = 'bottom'; vMon = mm }
+  }
+  var top = (vEdgeType === 'bottom') ? vEdgeY - h : vEdgeY
+  top = clamp(top, 0, Math.max(0, vph - h))
+  var m = vMon || { x: 0, y: 0, w: vpw, h: vph }
+  var left
+  if (cx < m.x) {
+    left = m.x
+  } else if (cx >= m.x + m.w) {
+    left = m.x + m.w - w
+  } else if (cx < m.x + m.w / 4) {
+    left = m.x
+  } else if (cx > m.x + m.w * 3 / 4) {
+    left = m.x + m.w - w
+  } else {
+    // 水平在 vMon 中间：吸到最近的竖直边（确保贴住屏幕，不悬空）
+    var hEdgeX = null, hEdgeVal = Infinity, hIsLeft = true
+    for (var i = 0; i < monitors.length; i++) {
+      var mm = monitors[i]
+      var dl = Math.abs(cx - mm.x)
+      var dr = Math.abs(mm.x + mm.w - cx)
+      if (dl < hEdgeVal) { hEdgeVal = dl; hEdgeX = mm.x; hIsLeft = true }
+      if (dr < hEdgeVal) { hEdgeVal = dr; hEdgeX = mm.x + mm.w; hIsLeft = false }
+    }
+    left = hIsLeft ? hEdgeX : hEdgeX - w
+  }
+  left = clamp(left, 0, Math.max(0, vpw - w))
+  // 分轴锚点（与 settle 的 mX/mY 一致）
+  var acx = left + w / 2
+  var acy = top + h / 2
+  var amX = monitorAtX(acx) || { x: 0, w: vpw }
+  var amY = (amX && acy >= amX.y && acy < amX.y + amX.h) ? amX : (monitorAtY(acy) || { y: 0, h: vph })
+  var hA = (acx < amX.x + amX.w / 4) ? 'left' : ((acx > amX.x + amX.w * 3 / 4) ? 'right' : null)
+  var vA = (acy < amY.y + amY.h / 4) ? 'top' : ((acy > amY.y + amY.h * 3 / 4) ? 'bottom' : null)
+  return { left: left, top: top, h: hA, v: vA }
+}
 function currentMonitor() {
   var w = root.offsetWidth || root.getBoundingClientRect().width || 0
   var h = root.offsetHeight || root.getBoundingClientRect().height || 0
@@ -648,11 +695,13 @@ var soundVol = 0.9
 var soundSet = 'duck'
 var peakMode = 'default'
 var bubbleOn = true
+var multiMonitor = false
+var neverMoved = true
 var scrollGapOn = false
 var scrollGapPx = 17
 function saveConfig() {
   try {
-    invoke('save_config', { cfg: { scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, peakMode: peakMode, bubbleOn: bubbleOn } })
+    invoke('save_config', { cfg: { scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, peakMode: peakMode, bubbleOn: bubbleOn, multiMonitor: multiMonitor } })
     // 锚点位置记忆：记录相对边框的离边距离，窗口 resize 后保持（localStorage）。
     // v:2 = 净距离格式（剥离避让距离），v:1 旧格式含避让距离，恢复时废弃旧格式。
     var vp = viewport()
@@ -843,31 +892,48 @@ function snapCheck() {
   var left = rect.left, top = rect.top
   var centerX = left + w / 2
   var centerY = top + h / 2
-  var mX = monitorAtX(centerX) || { x: 0, w: vp.w }
-  var mY = (mX && centerY >= mX.y && centerY < mX.y + mX.h) ? mX : (monitorAtY(centerY) || { y: 0, h: vp.h })
-  var moved = false
-  if (centerX < mX.x + mX.w / 4) {
-    state.h = 'left'
-    state.hOff = 0
-    left = mX.x
-    moved = true
-  } else if (centerX > mX.x + mX.w * 3 / 4) {
-    state.h = 'right'
-    state.hOff = 0
-    left = mX.x + mX.w - w - rightGap()
-    moved = true
-  } else {
-    state.h = null
-    state.hOff = left - mX.x
+  var innerM = null
+  for (var i = 0; i < monitors.length; i++) {
+    var im = monitors[i]
+    if (centerX >= im.x && centerX < im.x + im.w && centerY >= im.y && centerY < im.y + im.h) { innerM = im; break }
   }
-  if (centerY < mY.y + mY.h / 4) {
-    state.v = 'top'
-    state.vOff = 0
-    top = mY.y
-    moved = true
+  var mX, mY
+  var moved = false
+  if (innerM) {
+    mX = monitorAtX(centerX) || { x: 0, w: vp.w }
+    mY = (mX && centerY >= mX.y && centerY < mX.y + mX.h) ? mX : (monitorAtY(centerY) || { y: 0, h: vp.h })
+    if (centerX <= mX.x + mX.w / 2) {
+      state.h = 'left'
+      state.hOff = 0
+      left = mX.x
+      moved = true
+    } else {
+      state.h = 'right'
+      state.hOff = 0
+      left = mX.x + mX.w - w - rightGap()
+      moved = true
+    }
+    if (centerY <= mY.y + mY.h / 2) {
+      state.v = 'top'
+      state.vOff = 0
+      top = mY.y
+      moved = true
+    } else {
+      state.v = 'bottom'
+      state.vOff = 0
+      top = mY.y + mY.h - h
+      moved = true
+    }
   } else {
-    state.v = 'bottom'
-    state.vOff = Math.max(0, mY.y + mY.h - top - h)
+    // 空白区：吸到「最近显示器边」，确保贴住屏幕
+    var bp = snapBlankPos(centerX, centerY, w, h, vp.w, vp.h)
+    left = bp.left
+    top = bp.top
+    state.h = bp.h
+    state.v = bp.v
+    state.hOff = 0
+    state.vOff = 0
+    moved = true
   }
   if (moved) {
     state.left = left
@@ -919,6 +985,14 @@ function setupHitTest() {
   } catch (err) {}
 }
 function isWhaleHit(e) {
+  // 桌面端：光标在挂件整体区域内即可拖拽（点击穿透已由窗口级 setIgnoreCursorEvents 控制，
+  // 无需像素级鲸鱼检测，避免翻转/缩放时命中误判导致「拖不动、回不来」）
+  try {
+    var rr = root.getBoundingClientRect()
+    if (rr && rr.width > 0 && rr.height > 0 &&
+        e.clientX >= rr.left && e.clientX <= rr.right &&
+        e.clientY >= rr.top && e.clientY <= rr.bottom) return true
+  } catch (err) {}
   if (!hitCanvas || !hitReady) return true
   try {
     var r = img.getBoundingClientRect()
@@ -945,8 +1019,11 @@ function onDocPointerDown(e) {
   if (!isWhaleHit(e)) return
   try { e.preventDefault(); e.stopPropagation() } catch (err) {}
   var vp = viewport()
-  var rect = root.getBoundingClientRect()
-  drag = { active: true, startX: e.clientX, startY: e.clientY, origLeft: rect.left, origTop: rect.top, w: rect.width, h: rect.height, moved: false, vp: vp }
+  // 用 state（目标位置）作为拖动起点：挂件吸附有 .16s 过渡，若在过渡中按下，
+  // rect 是中间渲染值会导致起点错乱（拖完挂件乱跳、回不来）
+  var rw = root.offsetWidth || root.getBoundingClientRect().width || 0
+  var rh = root.offsetHeight || root.getBoundingClientRect().height || 0
+  drag = { active: true, startX: e.clientX, startY: e.clientY, origLeft: state.left, origTop: state.top, w: rw, h: rh, moved: false, vp: vp }
   root.classList.add('dshwv-dragging')
   pressDown()
   setWidgetCursor('grabbing')
@@ -967,8 +1044,17 @@ function onDocPointerMove(e) {
   express()
 }
 function onDocPointerUp(e) {
-  // 拦截鲸鱼区域内的 pointerup：防止下方元素（如文件行）监听 pointerup 穿透误触发
-  try { if (isWhaleHit(e)) { e.preventDefault(); e.stopPropagation() } } catch (err) {}
+  // 拦截鲸鱼区域内的 pointerup：防止下方元素（如文件行）监听 pointerup 穿透误触发。
+  // 气泡/菜单/菜单按钮区域不拦截——否则 preventDefault 会阻止 click 合成，导致气泡点不动。
+  try {
+    if (e.target && e.target.closest) {
+      if (e.target.closest('.dshwv-bubble') || e.target.closest('.dshwv-menu') || e.target.closest('.dshwv-menu-btn')) {
+        endDrag(e, true)
+        return
+      }
+    }
+    if (isWhaleHit(e)) { e.preventDefault(); e.stopPropagation() }
+  } catch (err) {}
   endDrag(e, true)
 }
 function onDocPointerCancel(e) { endDrag(e, false) }
@@ -976,6 +1062,10 @@ function onDocClickStopper(e) {
   // 只在鲸鱼命中区域拦截 click（保持透明区 pass-through）。
   // 持久注册（不随 endDrag 移除）——click 在 pointerup 之后派发，
   // 若在 endDrag 移除会导致 click 穿透到下方元素（如误打开文件）。
+  // 气泡/菜单/菜单按钮区域不拦截（保持可点击）。
+  if (e.target && e.target.closest) {
+    if (e.target.closest('.dshwv-bubble') || e.target.closest('.dshwv-menu') || e.target.closest('.dshwv-menu-btn')) return
+  }
   if (!isWhaleHit(e)) return
   try { e.preventDefault(); e.stopPropagation() } catch (err) {}
 }
@@ -1007,6 +1097,7 @@ document.addEventListener('pointermove', onDocPointerMoveCursor, true)
 function endDrag(e, clickAllowed) {
   if (!drag || !drag.active) return
   drag.active = false
+  neverMoved = false
   document.removeEventListener('pointermove', onDocPointerMove, true)
   document.removeEventListener('pointerup', onDocPointerUp, true)
   document.removeEventListener('pointercancel', onDocPointerCancel, true)
@@ -1020,27 +1111,40 @@ function endDrag(e, clickAllowed) {
   var top = clamp(drag.origTop + dy, 0, Math.max(0, drag.vp.h - drag.h))
   var centerX = left + drag.w / 2
   var centerY = top + drag.h / 2
-  var mX = monitorAtX(centerX) || { x: 0, w: drag.vp.w }
-  var mY = (mX && centerY >= mX.y && centerY < mX.y + mX.h) ? mX : (monitorAtY(centerY) || { y: 0, h: drag.vp.h })
-  if (centerX < mX.x + mX.w / 4) {
-    state.h = 'left'
-    state.hOff = 0
-  } else if (centerX > mX.x + mX.w * 3 / 4) {
-    state.h = 'right'
-    state.hOff = 0
-  } else {
-    state.h = null
-    state.hOff = left - mX.x
+  // 判断挂件中心点是否在某显示器工作区内部
+  var innerM = null
+  for (var i = 0; i < monitors.length; i++) {
+    var im = monitors[i]
+    if (centerX >= im.x && centerX < im.x + im.w && centerY >= im.y && centerY < im.y + im.h) { innerM = im; break }
   }
-  if (centerY < mY.y + mY.h / 4) {
-    state.v = 'top'
-    state.vOff = 0
-  } else if (centerY > mY.y + mY.h * 3 / 4) {
-    state.v = 'bottom'
-    state.vOff = 0
+  if (innerM) {
+    // 在显示器内部：最近边吸附（水平中心左半 → 吸左，右半 → 吸右；垂直同理）。
+    // 任何位置松手都贴边，消除悬空/错位（吸附精准、可预期、回得来）。
+    var mX = monitorAtX(centerX) || { x: 0, w: drag.vp.w }
+    var mY = (mX && centerY >= mX.y && centerY < mX.y + mX.h) ? mX : (monitorAtY(centerY) || { y: 0, h: drag.vp.h })
+    if (centerX <= mX.x + mX.w / 2) {
+      state.h = 'left'
+      state.hOff = 0
+    } else {
+      state.h = 'right'
+      state.hOff = 0
+    }
+    if (centerY <= mY.y + mY.h / 2) {
+      state.v = 'top'
+      state.vOff = 0
+    } else {
+      state.v = 'bottom'
+      state.vOff = 0
+    }
   } else {
-    state.v = null
-    state.vOff = top - mY.y
+    // 空白区：吸到「最近显示器边」，确保贴住屏幕且与 settle 一致
+    var bp = snapBlankPos(centerX, centerY, drag.w, drag.h, drag.vp.w, drag.vp.h)
+    state.left = bp.left
+    state.top = bp.top
+    state.h = bp.h
+    state.v = bp.v
+    state.hOff = 0
+    state.vOff = 0
   }
   state.left = left
   state.top = top
@@ -1075,12 +1179,33 @@ function applyAnchorPos() {
 }
 window.addEventListener('resize', function () {
   if (state.h === null && state.v === null && applyAnchorPos()) return
+  if (neverMoved) {
+    // 首次启动未移动过：窗口尺寸变化后保持右下角
+    var vpR = viewport()
+    var wR = root.offsetWidth || root.getBoundingClientRect().width || 0
+    var hR = root.offsetHeight || root.getBoundingClientRect().height || 0
+    state.left = Math.max(0, vpR.w - wR)
+    state.top = Math.max(0, vpR.h - hR)
+    state.h = 'right'
+    state.v = 'bottom'
+    state.hOff = 0
+    state.vOff = 0
+    express()
+    return
+  }
   settle()
 })
 
-var rect0 = root.getBoundingClientRect()
-state.left = rect0.left
-state.top = rect0.top
+// 初始：默认吸附窗口右下角（窗口加载时尺寸可能未最终确定，后续 resize/锚点恢复会修正）
+var vp0 = viewport()
+var rw0 = root.offsetWidth || root.getBoundingClientRect().width || 300
+var rh0 = root.offsetHeight || root.getBoundingClientRect().height || 375
+state.left = Math.max(0, vp0.w - rw0)
+state.top = Math.max(0, vp0.h - rh0)
+state.h = 'right'
+state.v = 'bottom'
+state.hOff = 0
+state.vOff = 0
 express()
 render()
 applySoundSet()
@@ -1092,6 +1217,26 @@ invoke('get_screen_info').then(function (info) {
     monitors = info.workAreas.map(function (a) {
       return { x: a.x / dpr, y: a.y / dpr, w: a.w / dpr, h: a.h / dpr }
     })
+    // monitors 就绪后恢复用户保存的位置（v:2 锚点）；无则保持默认右下角
+    try {
+      var aP = JSON.parse(localStorage.getItem('dshw-pos') || 'null')
+      if (aP && aP.v === 2 && (aP.hAnchor === 'left' || aP.hAnchor === 'right') && typeof aP.hDist === 'number' &&
+          (aP.vAnchor === 'top' || aP.vAnchor === 'bottom') && typeof aP.vDist === 'number') {
+        var vpP = viewport()
+        var mP = currentMonitor() || { x: 0, y: 0, w: vpP.w, h: vpP.h }
+        var wP = root.offsetWidth || root.getBoundingClientRect().width || 0
+        var hP = root.offsetHeight || root.getBoundingClientRect().height || 0
+        var effectiveRightDist = aP.hAnchor === 'right' ? aP.hDist + (scrollGapOn ? rightGap() : 0) : aP.hDist
+        var lP = aP.hAnchor === 'left' ? mP.x + aP.hDist : mP.x + mP.w - effectiveRightDist - wP
+        var tP = aP.vAnchor === 'top' ? mP.y + aP.vDist : mP.y + mP.h - aP.vDist - hP
+        state.left = clamp(lP, mP.x, Math.max(mP.x, mP.x + mP.w - wP))
+        state.top = clamp(tP, mP.y, Math.max(mP.y, mP.y + mP.h - hP))
+        state.h = aP.hAnchor
+        state.hOff = 0
+        state.v = aP.vAnchor
+        state.vOff = 0
+      }
+    } catch (err) {}
     settle()
   }
 }).catch(function () {})
@@ -1127,34 +1272,15 @@ invoke('get_config')
       bubbleOn = d.bubbleOn
       bubbleToggle.checked = bubbleOn
     }
+    if (d && typeof d.multiMonitor === 'boolean') {
+      multiMonitor = d.multiMonitor
+    }
 
 
     // 相对边框恢复（localStorage 锚点）：窗口变化后保持离边距离。
     // 仅认 v:2 净距离格式；旧格式（含避让距离）废弃，挂件保持默认右下角吸附。
     // 恢复时还原吸附状态（hAnchor/vAnchor → state.h/v），避免挂件变自由位置
     // 导致避让调节不实时（settle 自由分支只 clamp 不重算位置）。
-    try {
-      var a = JSON.parse(localStorage.getItem('dshw-pos') || 'null')
-      if (a && a.v === 2 && (a.hAnchor === 'left' || a.hAnchor === 'right') && typeof a.hDist === 'number' &&
-          (a.vAnchor === 'top' || a.vAnchor === 'bottom') && typeof a.vDist === 'number') {
-        var vpA = viewport()
-        var mA = currentMonitor() || { x: 0, y: 0, w: vpA.w, h: vpA.h }
-        var wA = root.offsetWidth || root.getBoundingClientRect().width || 0
-        var hA = root.offsetHeight || root.getBoundingClientRect().height || 0
-        // 锚点存的是净距离：右锚点按当前避让开关叠加避让距离
-        var effectiveRightDist = a.hAnchor === 'right' ? a.hDist + (scrollGapOn ? rightGap() : 0) : a.hDist
-        var lA = a.hAnchor === 'left' ? mA.x + a.hDist : mA.x + mA.w - effectiveRightDist - wA
-        var tA = a.vAnchor === 'top' ? mA.y + a.vDist : mA.y + mA.h - a.vDist - hA
-        state.left = clamp(lA, mA.x, Math.max(mA.x, mA.x + mA.w - wA))
-        state.top = clamp(tA, mA.y, Math.max(mA.y, mA.y + mA.h - hA))
-        // 按锚点还原吸附状态（贴边锚点 → 吸附；自由位锚点 → 自由）
-        state.h = a.hAnchor
-        state.hOff = 0
-        state.v = a.vAnchor
-        state.vOff = 0
-        settle()
-      }
-    } catch (err) {}
     refresh(false)
   })
   .catch(function () { refresh(false) })
@@ -1166,13 +1292,12 @@ var cursorPosFn = (window.__TAURI__ && window.__TAURI__.window && window.__TAURI
 var scaleFactor = window.devicePixelRatio || 1
 var winX = 0
 var winY = 0
-var geoReady = false
+var geoReady = true
 if (tauriWin) {
   tauriWin.outerPosition().then(function (pos) {
     winX = pos.x
     winY = pos.y
-    geoReady = true
-  }).catch(function () { geoReady = true })
+  }).catch(function () {})
 }
 function interactiveRect() {
   var r = root.getBoundingClientRect()

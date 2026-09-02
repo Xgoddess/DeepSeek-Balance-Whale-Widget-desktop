@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-whale-widget"
-version = "0.3.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "reqwest 0.12.28",

@@ -328,6 +328,42 @@ fn get_all_work_areas() -> Vec<WinRect> {
     areas
 }
 
+const MONITORINFOF_PRIMARY: u32 = 1;
+
+unsafe extern "system" fn primary_monitor_enum_proc(
+    h_monitor: isize,
+    _hdc: isize,
+    _lprc: *mut WinRect,
+    dw_data: isize,
+) -> i32 {
+    let primary = &mut *(dw_data as *mut Option<WinRect>);
+    let mut info = MonitorInfoW {
+        cb_size: std::mem::size_of::<MonitorInfoW>() as u32,
+        rc_monitor: WinRect { left: 0, top: 0, right: 0, bottom: 0 },
+        rc_work: WinRect { left: 0, top: 0, right: 0, bottom: 0 },
+        dw_flags: 0,
+    };
+    if GetMonitorInfoW(h_monitor, &mut info) != 0 && info.dw_flags & MONITORINFOF_PRIMARY != 0 {
+        *primary = Some(info.rc_work);
+        return 0; // 已找到主显示器，停止枚举
+    }
+    1
+}
+
+// 主显示器工作区（物理像素，虚拟屏幕坐标，排除任务栏）
+fn get_primary_work_area() -> Option<WinRect> {
+    let mut primary: Option<WinRect> = None;
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            primary_monitor_enum_proc,
+            &mut primary as *mut Option<WinRect> as isize,
+        );
+    }
+    primary
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkArea {
@@ -348,24 +384,44 @@ struct ScreenInfo {
 // 混合 DPI（多显示器缩放不同）下 window.scale_factor() 与 WebView2 实际 devicePixelRatio 可能不一致，
 // 所以后端只返回原始物理坐标，换算交给前端用 window.devicePixelRatio，保证与 innerWidth/innerHeight 同一坐标系。
 #[tauri::command]
-fn get_screen_info(window: tauri::WebviewWindow) -> Result<ScreenInfo, String> {
+fn get_screen_info(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<ScreenInfo, String> {
+    let multi = state.widget_config.lock().unwrap().multi_monitor;
     let sf = window.scale_factor().unwrap_or(1.0);
     let pos = window
         .outer_position()
         .unwrap_or(tauri::PhysicalPosition::new(0, 0));
     let mut work_areas = Vec::new();
-    for a in get_all_work_areas() {
-        let w = (a.right - a.left).max(0) as f64;
-        let h = (a.bottom - a.top).max(0) as f64;
-        if w <= 0.0 || h <= 0.0 {
-            continue;
+    if multi {
+        // 多屏（实验）：所有显示器工作区
+        for a in get_all_work_areas() {
+            let w = (a.right - a.left).max(0) as f64;
+            let h = (a.bottom - a.top).max(0) as f64;
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+            work_areas.push(WorkArea {
+                x: (a.left - pos.x) as f64,
+                y: (a.top - pos.y) as f64,
+                w,
+                h,
+            });
         }
-        work_areas.push(WorkArea {
-            x: (a.left - pos.x) as f64,
-            y: (a.top - pos.y) as f64,
-            w,
-            h,
-        });
+    } else {
+        // 单屏（默认）：窗口=主显示器工作区，前端工作区=整个窗口（x/y 恒为 0，与 viewport 完全一致）
+        let size = window
+            .outer_size()
+            .unwrap_or(tauri::PhysicalSize::new(0, 0));
+        if size.width > 0 && size.height > 0 {
+            work_areas.push(WorkArea {
+                x: 0.0,
+                y: 0.0,
+                w: size.width as f64,
+                h: size.height as f64,
+            });
+        }
     }
     if work_areas.is_empty() {
         let size = window
@@ -387,12 +443,24 @@ fn get_screen_info(window: tauri::WebviewWindow) -> Result<ScreenInfo, String> {
 fn setup_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let window = app.get_webview_window("main").unwrap();
 
-    // 覆盖虚拟屏幕（所有显示器），支持拖拽到任意显示器
+    // 多屏幕支持（实验，默认关闭）：关闭时窗口只覆盖主显示器工作区（单屏稳定），
+    // 开启时覆盖虚拟屏幕（所有显示器）可跨屏拖动
+    let multi = load_widget_config().multi_monitor;
     let mut positioned = false;
-    if let Some((vx, vy, vw, vh)) = get_virtual_screen() {
-        if vw > 0 && vh > 0 {
-            let _ = window.set_position(tauri::PhysicalPosition::new(vx, vy));
-            let _ = window.set_size(tauri::PhysicalSize::new(vw as u32, vh as u32));
+    if multi {
+        if let Some((vx, vy, vw, vh)) = get_virtual_screen() {
+            if vw > 0 && vh > 0 {
+                let _ = window.set_position(tauri::PhysicalPosition::new(vx, vy));
+                let _ = window.set_size(tauri::PhysicalSize::new(vw as u32, vh as u32));
+                positioned = true;
+            }
+        }
+    } else if let Some(wa) = get_primary_work_area() {
+        let w = (wa.right - wa.left).max(0) as u32;
+        let h = (wa.bottom - wa.top).max(0) as u32;
+        if w > 0 && h > 0 {
+            let _ = window.set_position(tauri::PhysicalPosition::new(wa.left, wa.top));
+            let _ = window.set_size(tauri::PhysicalSize::new(w, h));
             positioned = true;
         }
     }

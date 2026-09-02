@@ -18,6 +18,8 @@ pub struct WidgetConfig {
     pub sound_set: String,
     pub peak_mode: String,
     pub bubble_on: bool,
+    #[serde(default)]
+    pub multi_monitor: bool,
 }
 
 impl Default for WidgetConfig {
@@ -29,6 +31,7 @@ impl Default for WidgetConfig {
             sound_set: "duck".into(),
             peak_mode: "default".into(),
             bubble_on: true,
+            multi_monitor: false,
         }
     }
 }
